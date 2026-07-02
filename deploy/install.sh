@@ -29,16 +29,22 @@ step "Ensure uv is installed (bootstrap if missing)"
 if ! command -v uv >/dev/null; then
     echo "uv not found; installing via official astral.sh installer."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    # astral installer places uv at $HOME/.local/bin/uv (or $XDG_BIN_HOME)
     UV_BIN=""
     [[ -x /root/.local/bin/uv ]] && UV_BIN=/root/.local/bin/uv
     [[ -x /usr/local/bin/uv ]]   && UV_BIN=/usr/local/bin/uv
     if [[ -z "$UV_BIN" ]]; then
-        # Fallback: pip
         echo "Official installer did not place uv on a default PATH; falling back to pip3."
         pip3 install --break-system-packages uv 2>/dev/null || pip3 install uv
+        [[ -x /usr/local/bin/uv ]] && UV_BIN=/usr/local/bin/uv
     fi
-    command -v uv >/dev/null || [[ -x /root/.local/bin/uv ]] || fail "uv still not found after install attempt"
+    # Make uv globally visible: symlink to /usr/local/bin so it is on every user's PATH
+    # (sudo's sanitized PATH won't include /root/.local/bin).
+    if [[ -n "$UV_BIN" && ! -e /usr/local/bin/uv ]]; then
+        ln -s "$UV_BIN" /usr/local/bin/uv
+    fi
+    # Belt-and-suspenders: add /root/.local/bin to PATH for the remainder of this script
+    export PATH="/root/.local/bin:/usr/local/bin:$PATH"
+    command -v uv >/dev/null || fail "uv still not found after install attempt"
 fi
 echo "uv: $(uv --version)"
 
