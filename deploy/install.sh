@@ -49,6 +49,11 @@ fi
 chown -R ubuntu:ubuntu "$REPO_DIR"
 
 step "Setup venv and install dependencies"
+# Recreate .venv if it lacks a usable Python interpreter (e.g., rsync from a
+# foreign-OS dev machine can copy a partial venv that uv refuses to activate).
+if [[ ! -x "$REPO_DIR/.venv/bin/python3" ]]; then
+    rm -rf "$REPO_DIR/.venv"
+fi
 sudo -u ubuntu -H bash -lc "
     cd '$REPO_DIR'
     test -d .venv || uv venv
