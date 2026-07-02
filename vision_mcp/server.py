@@ -6,6 +6,7 @@ import logging
 from contextlib import asynccontextmanager as _asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -44,7 +45,39 @@ async def healthz(request: Request) -> JSONResponse:
 
 
 def build_app(cfg: Config) -> Starlette:
-    mcp = FastMCP("vision-mcp", stateless_http=True)
+    # FastMCP's TransportSecurityMiddleware rejects any Host header not in
+    # allowed_hosts (DNS-rebinding protection). Behind nginx the Host is the
+    # public hostname (e.g. liuxl.com.cn), so we must allowlist it. localhost
+    # and the server's own IP are kept for direct probing during ops. The
+    # `:*` suffix matches any port (e.g. localhost:80 from TestClient, or
+    # 127.0.0.1:8100 from curl during smoke tests).
+    allowed_hosts = [
+        "liuxl.com.cn",
+        "www.liuxl.com.cn",
+        "localhost",
+        "localhost:*",
+        "127.0.0.1",
+        "127.0.0.1:*",
+        "1.14.11.94",
+        "1.14.11.94:*",
+    ]
+    transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=[
+            "https://liuxl.com.cn",
+            "https://www.liuxl.com.cn",
+            "http://localhost",
+            "http://localhost:*",
+            "http://127.0.0.1",
+            "http://127.0.0.1:*",
+        ],
+    )
+    mcp = FastMCP(
+        "vision-mcp",
+        stateless_http=True,
+        transport_security=transport_security,
+    )
     register_tools(mcp, cfg)
     mcp_app = mcp.streamable_http_app()  # exposes /mcp on its own ASGI sub-app
 
