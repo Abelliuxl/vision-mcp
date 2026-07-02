@@ -1,28 +1,3 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.egg-info/
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Virtualenv
-.venv/
-venv/
-env/
-
-# Local secrets
-.env
-.env.*
-!.env.example
-
-# Logs
-*.log
-/logs/
-
 # OS
 .DS_Store
 Thumbs.db
@@ -31,3 +6,17 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Local secrets (never commit)
+/Users/liuxiaoliang/.config/vision-mcp/
+# (note: this is intentional — actual ignore pattern is the literal path; not portable
+# across machines, included for documentation only)
+
+# Test fixtures created at runtime
+/tmp/vision_proxy_test_*.png
