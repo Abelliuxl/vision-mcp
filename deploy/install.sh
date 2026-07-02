@@ -119,17 +119,25 @@ else
     install -d -m 0755 -o root -g root "$(dirname "$NGINX_TARGET")"
     cp "$NGINX_TARGET" "${NGINX_TARGET}.bak.$(date +%Y%m%d%H%M%S)"
     TMP="$(mktemp)"
+    # Inject just before the closing brace of the server block that has
+    # 'listen 443 ssl;' (i.e., the 443 vhost). Anchoring on 'listen 443 ssl;'
+    # rather than 'listen 80;' ensures we land in the HTTPS server block,
+    # not the plain-HTTP redirect block that often follows it.
     awk -v snippet="$NGINX_SNIPPET_SRC" -v token="$VISION_BEARER_TOKEN" '
         BEGIN {
             while ((getline line < snippet) > 0) snippet_buf = snippet_buf line "\n"
             close(snippet)
             gsub(/__FILL_TOKEN__/, token, snippet_buf)
         }
-        /listen 80;/ && !done { printf "%s", snippet_buf; done = 1 }
+        /listen 443 ssl;/ { in_443 = 1 }
+        in_443 && /^}/ && !inserted { printf "%s", snippet_buf; inserted = 1 }
         { print }
     ' "$NGINX_TARGET" > "$TMP"
     install -m 0644 -o root -g root "$TMP" "$NGINX_TARGET"
     rm -f "$TMP"
+    if ! grep -q "Begin vision-mcp injection" "$NGINX_TARGET"; then
+        fail "snippet injection failed: marker not present in $NGINX_TARGET"
+    fi
     echo "Injected snippet (backup: ${NGINX_TARGET}.bak.<timestamp>)."
 fi
 
