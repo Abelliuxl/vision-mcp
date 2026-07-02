@@ -27,23 +27,11 @@ command -v curl >/dev/null || fail "curl missing"
 
 step "Ensure uv is installed (bootstrap if missing)"
 if ! command -v uv >/dev/null; then
-    echo "uv not found; installing via official astral.sh installer."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    UV_BIN=""
-    [[ -x /root/.local/bin/uv ]] && UV_BIN=/root/.local/bin/uv
-    [[ -x /usr/local/bin/uv ]]   && UV_BIN=/usr/local/bin/uv
-    if [[ -z "$UV_BIN" ]]; then
-        echo "Official installer did not place uv on a default PATH; falling back to pip3."
-        pip3 install --break-system-packages uv 2>/dev/null || pip3 install uv
-        [[ -x /usr/local/bin/uv ]] && UV_BIN=/usr/local/bin/uv
-    fi
-    # Make uv globally visible: symlink to /usr/local/bin so it is on every user's PATH
-    # (sudo's sanitized PATH won't include /root/.local/bin).
-    if [[ -n "$UV_BIN" && ! -e /usr/local/bin/uv ]]; then
-        ln -s "$UV_BIN" /usr/local/bin/uv
-    fi
-    # Belt-and-suspenders: add /root/.local/bin to PATH for the remainder of this script
-    export PATH="/root/.local/bin:/usr/local/bin:$PATH"
+    echo "uv not found; installing via official astral.sh installer to /usr/local/bin."
+    # Install directly to /usr/local/bin so the binary is reachable by all users
+    # (sudo's sanitized PATH will not include /root/.local/bin where the installer
+    # defaults to; a symlink alone would be broken because /root is 0700).
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
     command -v uv >/dev/null || fail "uv still not found after install attempt"
 fi
 echo "uv: $(uv --version)"
