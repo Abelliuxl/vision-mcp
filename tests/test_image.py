@@ -53,12 +53,15 @@ def test_decode_compresses_huge_image(huge_png_b64):
 
 
 def test_decode_rejects_bytes_already_over_limit(monkeypatch):
-    # Construct a 9 MiB random-looking but valid PNG by patching MAX_IMAGE_BYTES down.
+    # Construct a valid PNG whose decoded bytes exceed a patched 1 KiB cap so
+    # the early-decoded-size guard in image.py can fire. (A 400x400 solid red
+    # PNG is ~1.4 KiB after decoding; the original 100x100 PNG was only 286 B,
+    # which is smaller than the cap and thus could not exercise the guard.)
     from vision_mcp import image as image_mod
     monkeypatch.setattr(image_mod, "MAX_IMAGE_BYTES", 1024)  # 1 KiB cap
     from io import BytesIO
     from PIL import Image
-    raw = Image.new("RGB", (100, 100), color="red")
+    raw = Image.new("RGB", (400, 400), color="red")
     buf = BytesIO()
     raw.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
