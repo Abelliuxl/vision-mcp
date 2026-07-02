@@ -42,9 +42,12 @@ if [[ ! -d "$REPO_DIR/.git" ]]; then
     if [[ -z "$ORIGIN_URL" ]]; then
         ORIGIN_URL="https://github.com/Abelliuxl/vision-mcp.git"
     fi
-    git clone "$ORIGIN_URL" "$REPO_DIR"
+    git clone "$ORIGIN_URL" "$REPO_DIR" || echo "WARN: git clone failed; continuing (operator may have rsynced the repo manually)"
 else
-    git -C "$REPO_DIR" pull --ff-only
+    # Best-effort fetch. Do NOT fail the install on transient git errors —
+    # the operator may have rsynced the tree into place already, or the
+    # origin may be temporarily unreachable.
+    git -C "$REPO_DIR" pull --ff-only 2>&1 || echo "WARN: git pull failed; continuing with tree as-is"
 fi
 chown -R ubuntu:ubuntu "$REPO_DIR"
 
