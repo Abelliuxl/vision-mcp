@@ -66,6 +66,10 @@ def test_tool_call_does_not_write_to_disk(cfg, tiny_png_b64):
         pathlib.Path, "write_bytes", side_effect=AssertionError("Path.write_bytes called")
     ), patch.object(pathlib.Path, "write_text", side_effect=AssertionError("Path.write_text called")
     ):
+        # Note: tempfile.NamedTemporaryFile is intentionally NOT patched.
+        # Uvicorn/starlette call it during startup for their own bookkeeping
+        # (unrelated to image data). Only the high-risk write APIs that could
+        # plausibly receive user image bytes are guarded here.
         app = build_app(cfg)
         with TestClient(app) as client:
             with respx.mock(base_url="https://ark.example.com") as mock:
