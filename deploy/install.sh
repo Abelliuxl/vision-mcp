@@ -84,6 +84,12 @@ EOF
     chown root:ubuntu "$ENV_FILE"
     echo "Generated VISION_BEARER_TOKEN: $VISION_BEARER_TOKEN_VAL"
     echo "(Save this — your MCP client must send it as Bearer.)"
+    # Mirror to the canonical unsuffixed names so the rest of this script can
+    # use $ARK_BASE_URL, $ARK_API_KEY, $ARK_MODEL, $VISION_BEARER_TOKEN directly.
+    ARK_BASE_URL="$ARK_BASE_URL_VAL"
+    ARK_API_KEY="$ARK_API_KEY_VAL"
+    ARK_MODEL="$ARK_MODEL_VAL"
+    VISION_BEARER_TOKEN="$VISION_BEARER_TOKEN_VAL"
 else
     # shellcheck disable=SC1090
     set -a; source "$ENV_FILE"; set +a
