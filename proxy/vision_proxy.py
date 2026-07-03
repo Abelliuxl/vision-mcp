@@ -28,6 +28,7 @@ import os
 import ssl
 import sys
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -56,6 +57,14 @@ ARK_TIMEOUT = 60.0  # seconds
 DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 8765
 DEFAULT_HTTP_PATH = "/mcp"
+DEFAULT_PROTOCOL_VERSION = "2025-11-25"
+SUPPORTED_PROTOCOL_VERSIONS = {
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+    "2024-10-07",
+}
 
 # --- tool schemas ---
 TOOLS: List[Dict[str, Any]] = [
@@ -273,15 +282,21 @@ def _make_error(req_id: Any, code: int, message: str) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id,
             "error": {"code": code, "message": message}}
 
-def _handle_initialize(_req: Dict[str, Any]) -> Dict[str, Any]:
+def _handle_initialize(req: Dict[str, Any]) -> Dict[str, Any]:
+    requested = ((req.get("params") or {}).get("protocolVersion")
+                 if isinstance(req.get("params"), dict) else None)
+    protocol = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else DEFAULT_PROTOCOL_VERSION
     return {
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": protocol,
         "serverInfo": {"name": "vision-mcp", "version": "0.3.0"},
         "capabilities": {"tools": {}},
     }
 
 def _handle_tools_list(_req: Dict[str, Any]) -> Dict[str, Any]:
     return {"tools": TOOLS}
+
+def _handle_ping(_req: Dict[str, Any]) -> Dict[str, Any]:
+    return {}
 
 def _handle_tools_call(req: Dict[str, Any]) -> Dict[str, Any]:
     params = req.get("params") or {}
@@ -303,6 +318,7 @@ def _dispatch(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     is_notification = req_id is None
     handler = {
         "initialize": _handle_initialize,
+        "ping": _handle_ping,
         "tools/list": _handle_tools_list,
         "tools/call": _handle_tools_call,
     }.get(method)
@@ -388,6 +404,7 @@ class _VisionHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, handler_cls)
         self.mcp_path = path
         self.auth_token = token
+        self.sessions: set[str] = set()
 
 class _VisionHTTPRequestHandler(BaseHTTPRequestHandler):
     server_version = "vision-mcp/0.3"
@@ -396,11 +413,17 @@ class _VisionHTTPRequestHandler(BaseHTTPRequestHandler):
         log.info("http %s - %s", self.address_string(), fmt % args)
 
     def _send(self, status: int, body: bytes = b"",
-              content_type: str = "application/json") -> None:
+              content_type: str = "application/json",
+              session_id: Optional[str] = None) -> None:
         self.send_response(status)
         self.send_header("Access-Control-Allow-Origin", "http://localhost")
-        self.send_header("Access-Control-Allow-Headers", "content-type, authorization, mcp-session-id")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "content-type, authorization, mcp-session-id, mcp-protocol-version",
+        )
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE")
+        if session_id:
+            self.send_header("Mcp-Session-Id", session_id)
         if body:
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -422,6 +445,10 @@ class _VisionHTTPRequestHandler(BaseHTTPRequestHandler):
             if not _check_http_auth(auth, self.server.auth_token):
                 self._send(401, _json_bytes({"error": "unauthorized"}))
                 return
+            session_id = self.headers.get("Mcp-Session-Id", "")
+            if session_id and session_id not in self.server.sessions:
+                self._send(404, _json_bytes({"error": "session not found"}))
+                return
             self._serve_sse()
             return
         self._send(404, _json_bytes({"error": "not found"}))
@@ -432,7 +459,10 @@ class _VisionHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-transform")
         self.send_header("Connection", "keep-alive")
         self.send_header("Access-Control-Allow-Origin", "http://localhost")
-        self.send_header("Access-Control-Allow-Headers", "content-type, authorization, mcp-session-id")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "content-type, authorization, mcp-session-id, mcp-protocol-version",
+        )
         self.end_headers()
         try:
             self.wfile.write(b": connected\n\n")
@@ -468,6 +498,14 @@ class _VisionHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         requests = payload if isinstance(payload, list) else [payload]
+        has_initialize = any(
+            isinstance(req, dict) and req.get("method") == "initialize"
+            for req in requests
+        )
+        session_id = self.headers.get("Mcp-Session-Id", "")
+        if not has_initialize and self.server.sessions and session_id not in self.server.sessions:
+            self._send(400, _json_bytes({"error": "missing or invalid mcp-session-id"}))
+            return
         responses: List[Dict[str, Any]] = []
         for req in requests:
             if not isinstance(req, dict):
@@ -481,7 +519,24 @@ class _VisionHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send(202)
             return
         body = _json_bytes(responses if isinstance(payload, list) else responses[0])
-        self._send(200, body)
+        response_session_id = None
+        if has_initialize:
+            response_session_id = session_id if session_id in self.server.sessions else str(uuid.uuid4())
+            self.server.sessions.add(response_session_id)
+        self._send(200, body, session_id=response_session_id)
+
+    def do_DELETE(self) -> None:  # noqa: N802 - stdlib callback name
+        if self.path.rstrip("/") != self.server.mcp_path.rstrip("/"):
+            self._send(404, _json_bytes({"error": "not found"}))
+            return
+        auth = self.headers.get("Authorization", "")
+        if not _check_http_auth(auth, self.server.auth_token):
+            self._send(401, _json_bytes({"error": "unauthorized"}))
+            return
+        session_id = self.headers.get("Mcp-Session-Id", "")
+        if session_id:
+            self.server.sessions.discard(session_id)
+        self._send(200, _json_bytes({"ok": True}))
 
 def run_stdio() -> int:
     log.info(
