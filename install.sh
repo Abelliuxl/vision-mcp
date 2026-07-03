@@ -1,29 +1,37 @@
 #!/usr/bin/env bash
-# Create the config directory with a placeholder .env file.
-# Edit ~/.config/vision-mcp/.env and set ARK_API_KEY=<real-key>.
+# Bootstrap .env in the project root (chmod 600) if missing, then show
+# the MCP-client configuration snippet.
 
 set -euo pipefail
 
-CONFIG_DIR="$HOME/.config/vision-mcp"
-ENV_FILE="$CONFIG_DIR/.env"
-
-mkdir -p "$CONFIG_DIR"
-chmod 700 "$CONFIG_DIR"
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="$REPO_ROOT/.env"
+EXAMPLE_FILE="$REPO_ROOT/.env.example"
 
 if [[ ! -f "$ENV_FILE" ]]; then
-    cat > "$ENV_FILE" <<'EOF'
-# Volcano Ark (Doubao). Set ARK_API_KEY to your real key.
-ARK_API_KEY=
-ARK_BASE_URL=https://ark.cn-beijing.volces.com
-ARK_MODEL=doubao-seed-2-0-mini-260215
-EOF
+    if [[ ! -f "$EXAMPLE_FILE" ]]; then
+        echo "ERROR: $EXAMPLE_FILE not found." >&2
+        exit 1
+    fi
+    cp "$EXAMPLE_FILE" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
-    echo "Created $ENV_FILE with placeholders."
-    echo "Edit it and fill in ARK_API_KEY."
+    echo "Created $ENV_FILE (mode 600)."
+    echo "Edit it and fill in ARK_API_KEY=<your-key>."
 else
     echo "$ENV_FILE already exists; leaving it alone."
 fi
 
-echo
-echo "Now configure your MCP client to launch:"
-echo "  python3 $(pwd)/proxy/vision_proxy.py"
+cat <<EOF
+
+Done. Configure your MCP client (Cursor / Trae / Claude Code) like:
+
+  {
+    "mcpServers": {
+      "vision": {
+        "command": "uv",
+        "args": ["run", "--project", "$REPO_ROOT", "python", "$REPO_ROOT/proxy/vision_proxy.py"]
+      }
+    }
+  }
+
+EOF

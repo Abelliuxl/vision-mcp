@@ -13,10 +13,13 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
-# Local secrets (never commit)
-/Users/liuxiaoliang/.config/vision-mcp/
-# (note: this is intentional — actual ignore pattern is the literal path; not portable
-# across machines, included for documentation only)
+# uv-managed project files
+.venv/
+
+# Local secrets — never commit the real .env (only .env.example is tracked)
+.env
+.env.*
+!.env.example
 
 # Test fixtures created at runtime
 /tmp/vision_proxy_test_*.png

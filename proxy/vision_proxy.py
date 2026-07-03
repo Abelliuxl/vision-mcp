@@ -5,7 +5,11 @@ Exposes three vision tools (ocr_image, describe_image, answer_image) backed
 by Doubao Seed 2.0 Mini on Volcano Ark. Reads local image files, base64-encodes
 them, forwards to Ark — no remote server required.
 
-Config: ~/.config/vision-mcp/.env (ARK_API_KEY required).
+Recommended launch: use `uv run python proxy/vision_proxy.py` from the project
+root, which uses the project's `.venv` (Python and CA certificates managed by
+uv, sidestepping macOS system-Python SSL issues).
+
+Config: `.env` in the project root (ARK_API_KEY required).
 Stdout: line-delimited JSON-RPC 2.0. Stderr: human-readable logs.
 """
 
@@ -31,7 +35,7 @@ log = logging.getLogger("vision_proxy")
 # --- constants ---
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com"
 DEFAULT_MODEL = "doubao-seed-2-0-mini-260215"
-ENV_FILE = os.path.join(os.path.expanduser("~"), ".config", "vision-mcp", ".env")
+ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
 MAX_IMAGE_BYTES = 8 * 1024 * 1024  # applied before base64
 _MAGIC = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -73,7 +77,7 @@ SYSTEM_DESCRIBE = "Describe the image objectively. Begin directly with the subje
 SYSTEM_ANSWER = "You are a visual QA assistant. Answer based solely on what is in the image. If the image does not contain enough information, respond with 'The image does not provide enough information.' Do not guess."
 
 def _load_env() -> Dict[str, str]:
-    """Parse ~/.config/vision-mcp/.env as KEY=value lines (optional # comments)."""
+    """Parse `<project-root>/.env` as KEY=value lines (optional # comments)."""
     if not os.path.isfile(ENV_FILE):
         return {}
     out: Dict[str, str] = {}
