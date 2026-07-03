@@ -1,8 +1,13 @@
 # vision-mcp
 
-A **single-file, pure-Python-stdlib** stdio MCP server exposing three vision tools (`ocr_image`, `describe_image`, `answer_image`) backed by **Doubao Seed 2.0 Mini** on Volcano Ark.
+A **single-file, pure-Python-stdlib** MCP server exposing three vision tools (`ocr_image`, `describe_image`, `answer_image`) backed by **Doubao Seed 2.0 Mini** on Volcano Ark.
 
 No remote server is required. The proxy reads local image files passed by the LLM and forwards them directly to Ark over HTTPS. The LLM **never sees** the base64 payload.
+
+It supports two transports:
+
+- **HTTP `/mcp`** for one long-lived local service. This is recommended for Cherry Studio and other clients that support `streamable-http`, because multiple chats reuse one process.
+- **stdio** for legacy clients. This remains the default for compatibility, but clients may spawn one process per session.
 
 ## Quick start
 
@@ -14,7 +19,48 @@ No remote server is required. The proxy reads local image files passed by the LL
    # then edit ./.env and set ARK_API_KEY
    ```
 
-2. Configure your MCP client (Cursor / Trae / Claude Code / etc.):
+2. Start one long-lived local HTTP MCP service:
+
+   ```bash
+   uv run --project /Users/liuxiaoliang/Workplace/vision-mcp \
+     python /Users/liuxiaoliang/Workplace/vision-mcp/proxy/vision_proxy.py \
+     --transport http --host 127.0.0.1 --port 8765 --path /mcp
+   ```
+
+3. Configure Cherry Studio or any streamable-http MCP client:
+
+   ```json
+   {
+     "mcpServers": {
+       "vision": {
+         "type": "streamableHttp",
+         "url": "http://127.0.0.1:8765/mcp"
+       }
+     }
+   }
+   ```
+
+   Optional bearer-token guard:
+
+   ```ini
+   VISION_MCP_TOKEN=<random-local-token>
+   ```
+
+   Then add this to the MCP server config:
+
+   ```json
+   {
+     "headers": {
+       "Authorization": "Bearer <random-local-token>"
+     }
+   }
+   ```
+
+4. From the LLM, call any of the three tools with `image_path: "/Users/you/screenshot.png"`.
+
+### Legacy stdio clients
+
+For clients that do not support HTTP MCP, configure stdio:
 
    ```json
    {
@@ -34,8 +80,6 @@ No remote server is required. The proxy reads local image files passed by the LL
    (e.g. `/Users/liuxiaoliang/Workplace/vision-mcp`). Using `uv run` keeps
    Python and CA certificates managed by uv, which avoids macOS system-Python
    SSL issues.
-
-3. From the LLM, call any of the three tools with `image_path: "/Users/you/screenshot.png"`.
 
 ### Verify the install
 
@@ -105,18 +149,23 @@ uv run python proxy/test_vision_proxy.py
 
 Drives the proxy as a subprocess; asserts initialize, `tools/list`, and a
 tool-call attempt with a fake key (which fails upstream with a 401, by
-design — does not require a real API key).
+design — does not require a real API key). It also starts the HTTP transport
+on `127.0.0.1:18765` and verifies `/health`, bearer-token auth, initialize,
+and `tools/list`.
 
 ## Requirements
 
 - [`uv`](https://github.com/astral-sh/uv) — used to manage Python and run
   the proxy.
-- Network access to `ark.cn-beijing.volses.com:443` from the machine
+- Network access to `ark.cn-beijing.volces.com:443` from the machine
   running the proxy.
 - An Ark API key from <https://www.volcengine.com/>.
 
 ## Transport
 
+- **HTTP**: `POST /mcp` accepts JSON-RPC 2.0 MCP messages and returns JSON
+  responses. `GET /health` returns a simple readiness check. Set
+  `VISION_MCP_TOKEN` or pass `--token` to require `Authorization: Bearer ...`.
 - **Stdin**: supports both **LSP/MCP-style `Content-Length` framing** and
   **line-delimited JSON** (auto-detected per message).
 - **Stdout**: line-delimited JSON-RPC 2.0 responses (one JSON object per

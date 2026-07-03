@@ -23,7 +23,26 @@ fi
 
 cat <<EOF
 
-Done. Configure your MCP client (Cursor / Trae / Claude Code) like:
+Done. Recommended: run one long-lived local HTTP MCP service:
+
+  uv run --project "$REPO_ROOT" python "$REPO_ROOT/proxy/vision_proxy.py" --transport http --host 127.0.0.1 --port 8765 --path /mcp
+
+Then configure streamable-http MCP clients like Cherry Studio:
+
+  {
+    "mcpServers": {
+      "vision": {
+        "type": "streamableHttp",
+        "url": "http://127.0.0.1:8765/mcp"
+      }
+    }
+  }
+
+If you set VISION_MCP_TOKEN in .env, include:
+
+  "headers": { "Authorization": "Bearer <VISION_MCP_TOKEN>" }
+
+Legacy stdio config, for clients that do not support HTTP:
 
   {
     "mcpServers": {
