@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vision-mcp local stdio proxy.
+"""vision-mcp local MCP proxy.
 
 Exposes three vision tools (ocr_image, describe_image, answer_image) backed
 by Doubao Seed 2.0 Mini on Volcano Ark. Reads local image files, base64-encodes
@@ -9,19 +9,26 @@ Recommended launch: use `uv run python proxy/vision_proxy.py` from the project
 root, which uses the project's `.venv` (Python and CA certificates managed by
 uv, sidestepping macOS system-Python SSL issues).
 
+Default transport is stdio for compatibility. Use `--transport http` to run a
+single long-lived streamable-http-compatible endpoint instead of letting each
+MCP client session spawn another stdio process.
+
 Config: `.env` in the project root (ARK_API_KEY required).
-Stdout: line-delimited JSON-RPC 2.0. Stderr: human-readable logs.
+Stdio stdout: line-delimited JSON-RPC 2.0. Stderr: human-readable logs.
 """
 
 from __future__ import annotations
 
 import base64
+import argparse
 import http.client
 import json
 import logging
 import os
 import ssl
 import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 # --- logging: stderr only ---
@@ -46,6 +53,9 @@ _MAGIC = (
 _WEBP_RIFF, _WEBP_TAG = b"RIFF", b"WEBP"
 ARK_PATH = "/api/v3/chat/completions"
 ARK_TIMEOUT = 60.0  # seconds
+DEFAULT_HTTP_HOST = "127.0.0.1"
+DEFAULT_HTTP_PORT = 8765
+DEFAULT_HTTP_PATH = "/mcp"
 
 # --- tool schemas ---
 TOOLS: List[Dict[str, Any]] = [
@@ -266,7 +276,7 @@ def _make_error(req_id: Any, code: int, message: str) -> Dict[str, Any]:
 def _handle_initialize(_req: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "protocolVersion": "2024-11-05",
-        "serverInfo": {"name": "vision-mcp", "version": "0.2.0"},
+        "serverInfo": {"name": "vision-mcp", "version": "0.3.0"},
         "capabilities": {"tools": {}},
     }
 
@@ -357,7 +367,123 @@ def _write_response(msg: Dict[str, Any]) -> None:
     sys.stdout.write("\n")
     sys.stdout.flush()
 
-def main() -> int:
+def _parse_http_token() -> str:
+    file_cfg = _load_env()
+    return os.environ.get("VISION_MCP_TOKEN") or file_cfg.get("VISION_MCP_TOKEN", "")
+
+def _check_http_auth(header: str, token: str) -> bool:
+    if not token:
+        return True
+    prefix = "Bearer "
+    return header.startswith(prefix) and header[len(prefix):] == token
+
+def _json_bytes(payload: Any) -> bytes:
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+class _VisionHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, server_address: Tuple[str, int], handler_cls: Any,
+                 path: str, token: str):
+        super().__init__(server_address, handler_cls)
+        self.mcp_path = path
+        self.auth_token = token
+
+class _VisionHTTPRequestHandler(BaseHTTPRequestHandler):
+    server_version = "vision-mcp/0.3"
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        log.info("http %s - %s", self.address_string(), fmt % args)
+
+    def _send(self, status: int, body: bytes = b"",
+              content_type: str = "application/json") -> None:
+        self.send_response(status)
+        self.send_header("Access-Control-Allow-Origin", "http://localhost")
+        self.send_header("Access-Control-Allow-Headers", "content-type, authorization, mcp-session-id")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        if body:
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+        else:
+            self.send_header("Content-Length", "0")
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - stdlib callback name
+        self._send(204)
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
+        if self.path.rstrip("/") in ("/health", self.server.mcp_path.rstrip("/") + "/health"):
+            self._send(200, _json_bytes({"ok": True, "name": "vision-mcp"}))
+            return
+        if self.path.rstrip("/") == self.server.mcp_path.rstrip("/"):
+            auth = self.headers.get("Authorization", "")
+            if not _check_http_auth(auth, self.server.auth_token):
+                self._send(401, _json_bytes({"error": "unauthorized"}))
+                return
+            self._serve_sse()
+            return
+        self._send(404, _json_bytes({"error": "not found"}))
+
+    def _serve_sse(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "http://localhost")
+        self.send_header("Access-Control-Allow-Headers", "content-type, authorization, mcp-session-id")
+        self.end_headers()
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                time.sleep(15)
+                self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            log.info("http %s - SSE client disconnected", self.address_string())
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
+        if self.path.rstrip("/") != self.server.mcp_path.rstrip("/"):
+            self._send(404, _json_bytes({"error": "not found"}))
+            return
+        auth = self.headers.get("Authorization", "")
+        if not _check_http_auth(auth, self.server.auth_token):
+            self._send(401, _json_bytes({"error": "unauthorized"}))
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send(411, _json_bytes({"error": "invalid content-length"}))
+            return
+        if length <= 0:
+            self._send(400, _json_bytes({"error": "empty request body"}))
+            return
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            self._send(400, _json_bytes(_make_error(None, -32700, f"Parse error: {exc}")))
+            return
+
+        requests = payload if isinstance(payload, list) else [payload]
+        responses: List[Dict[str, Any]] = []
+        for req in requests:
+            if not isinstance(req, dict):
+                responses.append(_make_error(None, -32600, "request must be an object"))
+                continue
+            resp = _dispatch(req)
+            if resp is not None:
+                responses.append(resp)
+
+        if not responses:
+            self._send(202)
+            return
+        body = _json_bytes(responses if isinstance(payload, list) else responses[0])
+        self._send(200, body)
+
+def run_stdio() -> int:
     log.info(
         "starting vision-mcp local stdio proxy (python %s)",
         "%d.%d.%d" % sys.version_info[:3],
@@ -400,6 +526,43 @@ def main() -> int:
                 log.error("stdout write error: %s", exc)
                 break
     return 0
+
+def run_http(host: str, port: int, path: str, token: str) -> int:
+    log.info(
+        "starting vision-mcp http proxy at http://%s:%d%s (python %s)",
+        host, port, path, "%d.%d.%d" % sys.version_info[:3],
+    )
+    api_key, _, _ = _config()
+    if not api_key:
+        log.warning(
+            "ARK_API_KEY is not set — tool calls will fail until it is. "
+            "Edit %s", ENV_FILE,
+        )
+    if not token:
+        log.warning("VISION_MCP_TOKEN is not set; HTTP endpoint has no bearer-token guard")
+    server = _VisionHTTPServer((host, port), _VisionHTTPRequestHandler, path, token)
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        log.info("interrupt received; shutting down")
+    finally:
+        server.server_close()
+    return 0
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="vision-mcp local MCP proxy")
+    parser.add_argument("--transport", choices=("stdio", "http"), default="stdio")
+    parser.add_argument("--host", default=os.environ.get("VISION_MCP_HOST", DEFAULT_HTTP_HOST))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("VISION_MCP_PORT", DEFAULT_HTTP_PORT)))
+    parser.add_argument("--path", default=os.environ.get("VISION_MCP_PATH", DEFAULT_HTTP_PATH))
+    parser.add_argument("--token", default=_parse_http_token(),
+                        help="Bearer token for HTTP transport; defaults to VISION_MCP_TOKEN/.env")
+    args = parser.parse_args(argv)
+    if not args.path.startswith("/"):
+        parser.error("--path must start with /")
+    if args.transport == "http":
+        return run_http(args.host, args.port, args.path, args.token)
+    return run_stdio()
 
 if __name__ == "__main__":
     sys.exit(main())

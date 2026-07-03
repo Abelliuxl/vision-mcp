@@ -1,7 +1,7 @@
 [project]
 name = "vision-mcp"
-version = "0.2.0"
-description = "Single-file stdio MCP proxy exposing three vision tools on Doubao Seed 2.0 Mini."
+version = "0.3.0"
+description = "Pure-stdlib stdio/HTTP MCP proxy exposing three vision tools on Doubao Seed 2.0 Mini."
 requires-python = ">=3.8"
 dependencies = []
 

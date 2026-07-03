@@ -17,6 +17,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 
 # Smallest valid 2x2 red PNG (verified): 67 bytes decoded.
 TINY_PNG_BASE64 = (
@@ -59,6 +62,90 @@ def expect_tool_result_with_upstream_error(resp):
         f"expected upstream/network-error text, got: {blob!r}"
     return f"isError text: {blob[:80]}"
 
+def http_json(url, payload=None, token=None):
+    headers = {"Accept": "application/json"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if payload is not None else "GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body = resp.read()
+    return json.loads(body.decode("utf-8")) if body else None
+
+def http_sse_first_chunk(url, token=None):
+    headers = {"Accept": "text/event-stream"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    resp = urllib.request.urlopen(req, timeout=5)
+    try:
+        chunk = resp.read(len(b": connected\n\n"))
+        return resp.status, resp.headers.get("Content-Type", ""), chunk
+    finally:
+        resp.close()
+
+def wait_for_http(url, token):
+    deadline = time.time() + 5
+    last = None
+    while time.time() < deadline:
+        try:
+            return http_json(url, token=token)
+        except Exception as exc:
+            last = exc
+            time.sleep(0.1)
+    raise RuntimeError(f"HTTP server did not become ready: {last}")
+
+def test_http_transport(script):
+    token = "test-token"
+    env = os.environ.copy()
+    env["ARK_API_KEY"] = "test-fake-key"
+    env["VISION_MCP_TOKEN"] = token
+    proc = subprocess.Popen(
+        [sys.executable, script, "--transport", "http", "--host", "127.0.0.1",
+         "--port", "18765", "--path", "/mcp"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        wait_for_http("http://127.0.0.1:18765/health", token)
+        try:
+            http_json("http://127.0.0.1:18765/mcp", {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+            })
+            raise AssertionError("expected HTTP 401 without bearer token")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 401, f"expected 401, got {exc.code}"
+        try:
+            http_sse_first_chunk("http://127.0.0.1:18765/mcp")
+            raise AssertionError("expected HTTP 401 for SSE without bearer token")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 401, f"expected SSE 401, got {exc.code}"
+        status, content_type, chunk = http_sse_first_chunk("http://127.0.0.1:18765/mcp", token=token)
+        assert status == 200, status
+        assert content_type.startswith("text/event-stream"), content_type
+        assert chunk == b": connected\n\n", chunk
+        r = http_json("http://127.0.0.1:18765/mcp", {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+        }, token=token)
+        assert r.get("id") == 1, f"HTTP initialize bad id: {r}"
+        assert r["result"]["serverInfo"]["name"] == "vision-mcp", r
+        r = http_json("http://127.0.0.1:18765/mcp", {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/list",
+        }, token=token)
+        names = {t["name"] for t in r["result"]["tools"]}
+        assert names == {"ocr_image", "describe_image", "answer_image"}, names
+        print("OK: HTTP transport initialize/tools/list")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
 def main():
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vision_proxy.py")
@@ -126,6 +213,7 @@ def main():
             proc.wait(timeout=2)
 
         print("ALL OK")
+        test_http_transport(script)
         return 0
     finally:
         if proc.poll() is None:
